@@ -230,28 +230,20 @@ class AStarGUI:
         s = s.strip()
         return None if not s else float(s)
 
-    def _draw_static(self) -> None:
+    def _draw_static(self, partial_path: Optional[List[int]] = None) -> None:
         if self.tsp is None:
             return
         self.ax.clear()
+        pp = partial_path if partial_path and len(partial_path) >= 2 else None
         draw_tsp(
             self.ax,
             self.tsp,
             city_size=35,
             annotate_fontsize=7,
             edge_lw=0.7,
+            partial_path=pp,
         )
         self.ax.set_title(f"TSP n={self.tsp.n}")
-        self.canvas.draw()
-
-    def _overlay_partial(self, visited_path: List[int]) -> None:
-        if self.tsp is None or len(visited_path) < 2:
-            self.canvas.draw()
-            return
-        pts = self.tsp.points
-        xs = [pts[i, 0] for i in visited_path]
-        ys = [pts[i, 1] for i in visited_path]
-        self.ax.plot(xs, ys, "r-", lw=1.4, zorder=4, alpha=0.85)
         self.canvas.draw()
 
     def on_generate(self) -> None:
@@ -317,12 +309,35 @@ class AStarGUI:
 
         def work() -> None:
             solver = AStarTSPSolver(tsp, heuristic=hname, start=0)
-            res = solver.search(max_expansions=max_e, time_limit_sec=max_t)
+            res: Optional[SearchResult] = None
+            for ev in solver.search_stepwise(
+                max_expansions=max_e, time_limit_sec=max_t
+            ):
+                et = ev.get("event")
+                if et == EVENT_POP:
+                    path = ev.get("path")
+                    if isinstance(path, list) and len(path) >= 2:
+                        snap = list(path)
+                        self.root.after(0, lambda p=snap: self._draw_static(p))
+                elif et == EVENT_GOAL:
+                    tour = ev.get("tour", [])
+                    if isinstance(tour, list) and len(tour) >= 2:
+                        tr = list(tour)
+                        self.root.after(0, lambda t=tr: self._draw_static(t))
+                elif et == EVENT_DONE:
+                    r = ev.get("result")
+                    if isinstance(r, SearchResult):
+                        res = r
 
             def finish() -> None:
-                if res.success:
+                if res is None:
                     self._draw_static()
-                    self._overlay_partial(res.tour)
+                    self._log("完成: (无结果)")
+                    return
+                if res.success and res.tour:
+                    self._draw_static(list(res.tour))
+                else:
+                    self._draw_static()
                 self._log(
                     f"完成: cost={res.cost:.6f}, expansions={res.expansions}, "
                     f"time={res.elapsed_sec:.4f}s"
@@ -395,6 +410,11 @@ class AStarGUI:
 
         et = ev.get("event")
         if et == EVENT_POP:
+            path = ev.get("path")
+            if isinstance(path, list) and len(path) >= 2:
+                self._draw_static(path)
+            else:
+                self._draw_static()
             self._log(
                 f"POP  city={ev.get('current')} phase={ev.get('phase')} "
                 f"g={ev.get('g'):.4f} h={ev.get('h'):.4f} f={ev.get('f'):.4f} "
@@ -403,9 +423,7 @@ class AStarGUI:
             )
         elif et == EVENT_GOAL:
             tour = ev.get("tour", [])
-            self._draw_static()
-            if len(tour) >= 2:
-                self._overlay_partial(tour)
+            self._draw_static(list(tour) if isinstance(tour, list) and len(tour) >= 2 else None)
             self._log(
                 f"GOAL cost={ev.get('cost'):.6f} tour={tour} "
                 f"本步搜索耗时_s={dt_step:.6f} 累计搜索耗时_s={self._cum_search_s:.6f}"

@@ -48,6 +48,24 @@ def _reconstruct_tour(
     return seq + [start]
 
 
+def _reconstruct_prefix(
+    came_from: Dict[State, State],
+    mask: int,
+    current: int,
+    phase: int,
+) -> List[int]:
+    """从 came_from 回溯当前 POP 状态对应的路径前缀（城市序号，含当前）。"""
+    path_rev: List[int] = []
+    m, c, ph = mask, current, phase
+    while True:
+        path_rev.append(c)
+        key: State = (m, c, ph)
+        if key not in came_from:
+            break
+        m, c, ph = came_from[key]
+    return list(reversed(path_rev))
+
+
 EVENT_POP = "pop"
 EVENT_PUSH = "push"
 EVENT_GOAL = "goal"
@@ -110,6 +128,7 @@ class AStarTSPSolver:
                     False, [], 0.0, expansions, elapsed(), "time limit exceeded"
                 )
             f, h, _, mask, current, phase, g = heapq.heappop(open_heap)
+            mask, current, phase = int(mask), int(current), int(phase)
             state: State = (mask, current, phase)
             if g_best.get(state, float("inf")) < g - 1e-12:
                 continue
@@ -127,7 +146,8 @@ class AStarTSPSolver:
                 continue
 
             if mask == full_mask:
-                for nxt, w in adj[current]:
+                for nxt_raw, w in adj[current]:
+                    nxt = int(nxt_raw)
                     if nxt != start:
                         continue
                     new_g = g + w
@@ -141,7 +161,8 @@ class AStarTSPSolver:
                     )
                     counter += 1
 
-            for nxt, w in adj[current]:
+            for nxt_raw, w in adj[current]:
+                nxt = int(nxt_raw)
                 if nxt == start:
                     continue
                 if (mask >> nxt) & 1:
@@ -198,6 +219,7 @@ class AStarTSPSolver:
                 }
                 return None
             f, h, _, mask, current, phase, g = heapq.heappop(open_heap)
+            mask, current, phase = int(mask), int(current), int(phase)
             state: State = (mask, current, phase)
             if g_best.get(state, float("inf")) < g - 1e-12:
                 continue
@@ -220,6 +242,7 @@ class AStarTSPSolver:
                 "h": h,
                 "f": f,
                 "expansions": expansions,
+                "path": _reconstruct_prefix(came_from, mask, current, phase),
             }
 
             if phase == 1 and mask == full_mask and current == start:
@@ -241,7 +264,8 @@ class AStarTSPSolver:
                 continue
 
             if mask == full_mask:
-                for nxt, w in adj[current]:
+                for nxt_raw, w in adj[current]:
+                    nxt = int(nxt_raw)
                     if nxt != start:
                         continue
                     new_g = g + w
@@ -264,7 +288,8 @@ class AStarTSPSolver:
                         "phase": 1,
                     }
 
-            for nxt, w in adj[current]:
+            for nxt_raw, w in adj[current]:
+                nxt = int(nxt_raw)
                 if nxt == start:
                     continue
                 if (mask >> nxt) & 1:

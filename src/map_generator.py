@@ -35,6 +35,7 @@ def build_knn_graph(points: np.ndarray, k: int) -> List[List[Tuple[int, float]]]
     for i in range(n):
         order = np.argsort(dist_mat[i])[:k]
         for j in order:
+            j = int(j)
             if j == i:
                 continue
             a, b = (i, j) if i < j else (j, i)
