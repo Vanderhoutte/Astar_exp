@@ -5,10 +5,11 @@ from __future__ import annotations
 import heapq
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Generator, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Generator, List, Optional, Tuple, Union
 
 from .heuristics import HeuristicFn, get_heuristic, h_euclidean
 from .map_generator import TSPGraph
+from .solution_verifier import normalize_start, validate_closed_tour
 
 State = Tuple[int, int, int]
 
@@ -21,6 +22,8 @@ class SearchResult:
     expansions: int
     elapsed_sec: float
     message: str = ""
+    method: str = "astar_exact"
+    optimal: bool = True
 
 
 AStarResult = SearchResult
@@ -81,7 +84,7 @@ class AStarTSPSolver:
     ) -> None:
         self.tsp = tsp
         self._heuristic_arg: Union[str, HeuristicFn, None] = heuristic
-        self.start = start
+        self.start = normalize_start(start, tsp.n)
 
     def _h_fn(self) -> HeuristicFn:
         if self._heuristic_arg is None:
@@ -94,10 +97,12 @@ class AStarTSPSolver:
         self,
         max_expansions: int | None = None,
         time_limit_sec: float | None = None,
+        epsilon: float = 1.0,
+        cancel_check: Optional[Callable[[], bool]] = None,
     ) -> SearchResult:
         h_fn = self._h_fn()
         tsp = self.tsp
-        start = self.start
+        start = normalize_start(self.start, tsp.n)
         t0 = time.perf_counter()
         n = tsp.n
         full_mask = (1 << n) - 1
@@ -109,23 +114,48 @@ class AStarTSPSolver:
         def over_time() -> bool:
             return time_limit_sec is not None and elapsed() >= time_limit_sec
 
+        def cancelled() -> bool:
+            return cancel_check is not None and bool(cancel_check())
+
         counter = 0
         start_state: State = (1 << start, start, 0)
         g_best: Dict[State, float] = {start_state: 0.0}
         came_from: Dict[State, State] = {}
 
         h0 = h_fn(1 << start, start, tsp, start)
-        f0 = h0
+        eps = float(epsilon)
+        f0 = 0.0 + eps * h0
         open_heap: List[Tuple[float, float, int, int, int, int, float]] = []
         heapq.heappush(open_heap, (f0, h0, counter, 1 << start, start, 0, 0.0))
         counter += 1
 
         expansions = 0
+        mth = "astar_exact" if eps <= 1.0 + 1e-12 else "astar_weighted"
+        # 仅凭 epsilon=1 无法严格证明最优（启发可能不可采纳）；保守置 False。
+        opt = False
 
         while open_heap:
+            if cancelled():
+                return SearchResult(
+                    False,
+                    [],
+                    0.0,
+                    expansions,
+                    elapsed(),
+                    "search cancelled",
+                    method=mth,
+                    optimal=opt,
+                )
             if over_time():
                 return SearchResult(
-                    False, [], 0.0, expansions, elapsed(), "time limit exceeded"
+                    False,
+                    [],
+                    0.0,
+                    expansions,
+                    elapsed(),
+                    "time limit exceeded",
+                    method=mth,
+                    optimal=opt,
                 )
             f, h, _, mask, current, phase, g = heapq.heappop(open_heap)
             mask, current, phase = int(mask), int(current), int(phase)
@@ -135,12 +165,40 @@ class AStarTSPSolver:
             expansions += 1
             if max_expansions is not None and expansions > max_expansions:
                 return SearchResult(
-                    False, [], 0.0, expansions, elapsed(), "expansion limit exceeded"
+                    False,
+                    [],
+                    0.0,
+                    expansions,
+                    elapsed(),
+                    "expansion limit exceeded",
+                    method=mth,
+                    optimal=opt,
                 )
 
             if phase == 1 and mask == full_mask and current == start:
                 tour = _reconstruct_tour(came_from, full_mask, start)
-                return SearchResult(True, tour, g, expansions, elapsed(), "")
+                chk = validate_closed_tour(tsp, tour, start=start, cost=g)
+                if not chk.valid:
+                    return SearchResult(
+                        False,
+                        list(tour),
+                        float(chk.computed_cost),
+                        expansions,
+                        elapsed(),
+                        f"internal validation failed: {chk.message}",
+                        method=mth,
+                        optimal=False,
+                    )
+                return SearchResult(
+                    True,
+                    chk.normalized_tour,
+                    chk.computed_cost,
+                    expansions,
+                    elapsed(),
+                    "",
+                    method=mth,
+                    optimal=opt,
+                )
 
             if phase == 1:
                 continue
@@ -175,22 +233,31 @@ class AStarTSPSolver:
                 g_best[nstate] = new_g
                 came_from[nstate] = (mask, current, 0)
                 hn = h_fn(new_mask, nxt, tsp, start)
-                fn = new_g + hn
+                fn = new_g + eps * hn
                 heapq.heappush(open_heap, (fn, hn, counter, new_mask, nxt, 0, new_g))
                 counter += 1
 
         return SearchResult(
-            False, [], 0.0, expansions, elapsed(), "no solution (open empty)"
+            False,
+            [],
+            0.0,
+            expansions,
+            elapsed(),
+            "no solution (open empty)",
+            method=mth,
+            optimal=opt,
         )
 
     def search_stepwise(
         self,
         max_expansions: int | None = None,
         time_limit_sec: float | None = None,
+        epsilon: float = 1.0,
+        cancel_check: Optional[Callable[[], bool]] = None,
     ) -> Generator[Dict[str, Any], None, Optional[SearchResult]]:
         h_fn = self._h_fn()
         tsp = self.tsp
-        start = self.start
+        start = normalize_start(self.start, tsp.n)
         t0 = time.perf_counter()
         n = tsp.n
         full_mask = (1 << n) - 1
@@ -199,23 +266,55 @@ class AStarTSPSolver:
         def elapsed() -> float:
             return time.perf_counter() - t0
 
+        def cancelled() -> bool:
+            return cancel_check is not None and bool(cancel_check())
+
         counter = 0
         start_state: State = (1 << start, start, 0)
         g_best: Dict[State, float] = {start_state: 0.0}
         came_from: Dict[State, State] = {}
 
         h0 = h_fn(1 << start, start, tsp, start)
+        eps = float(epsilon)
+        f0 = 0.0 + eps * h0
         open_heap: List[Tuple[float, float, int, int, int, int, float]] = []
-        heapq.heappush(open_heap, (h0, h0, counter, 1 << start, start, 0, 0.0))
+        heapq.heappush(open_heap, (f0, h0, counter, 1 << start, start, 0, 0.0))
         counter += 1
 
         expansions = 0
+        mth = "astar_exact" if eps <= 1.0 + 1e-12 else "astar_weighted"
+        # 仅凭 epsilon=1 无法严格证明最优（启发可能不可采纳）；保守置 False。
+        opt = False
 
         while open_heap:
+            if cancelled():
+                yield {
+                    "event": EVENT_DONE,
+                    "result": SearchResult(
+                        False,
+                        [],
+                        0.0,
+                        expansions,
+                        elapsed(),
+                        "search cancelled",
+                        method=mth,
+                        optimal=opt,
+                    ),
+                }
+                return None
             if time_limit_sec is not None and elapsed() >= time_limit_sec:
                 yield {
                     "event": EVENT_DONE,
-                    "result": SearchResult(False, [], 0.0, expansions, elapsed(), "time limit"),
+                    "result": SearchResult(
+                        False,
+                        [],
+                        0.0,
+                        expansions,
+                        elapsed(),
+                        "time limit",
+                        method=mth,
+                        optimal=opt,
+                    ),
                 }
                 return None
             f, h, _, mask, current, phase, g = heapq.heappop(open_heap)
@@ -228,7 +327,30 @@ class AStarTSPSolver:
                 yield {
                     "event": EVENT_DONE,
                     "result": SearchResult(
-                        False, [], 0.0, expansions, elapsed(), "expansion limit"
+                        False,
+                        [],
+                        0.0,
+                        expansions,
+                        elapsed(),
+                        "expansion limit",
+                        method=mth,
+                        optimal=opt,
+                    ),
+                }
+                return None
+
+            if cancelled():
+                yield {
+                    "event": EVENT_DONE,
+                    "result": SearchResult(
+                        False,
+                        [],
+                        0.0,
+                        expansions,
+                        elapsed(),
+                        "search cancelled",
+                        method=mth,
+                        optimal=opt,
                     ),
                 }
                 return None
@@ -247,14 +369,37 @@ class AStarTSPSolver:
 
             if phase == 1 and mask == full_mask and current == start:
                 tour = _reconstruct_tour(came_from, full_mask, start)
-                res = SearchResult(True, tour, g, expansions, elapsed(), "")
+                chk = validate_closed_tour(tsp, tour, start=start, cost=g)
+                if not chk.valid:
+                    res_bad = SearchResult(
+                        False,
+                        list(tour),
+                        float(chk.computed_cost),
+                        expansions,
+                        elapsed(),
+                        f"internal validation failed: {chk.message}",
+                        method=mth,
+                        optimal=False,
+                    )
+                    yield {"event": EVENT_DONE, "result": res_bad}
+                    return None
+                res = SearchResult(
+                    True,
+                    chk.normalized_tour,
+                    chk.computed_cost,
+                    expansions,
+                    elapsed(),
+                    "",
+                    method=mth,
+                    optimal=opt,
+                )
                 yield {
                     "event": EVENT_GOAL,
-                    "tour": tour,
-                    "cost": g,
-                    "g": g,
+                    "tour": chk.normalized_tour,
+                    "cost": chk.computed_cost,
+                    "g": chk.computed_cost,
                     "h": 0.0,
-                    "f": g,
+                    "f": chk.computed_cost,
                     "expansions": expansions,
                 }
                 yield {"event": EVENT_DONE, "result": res}
@@ -265,6 +410,21 @@ class AStarTSPSolver:
 
             if mask == full_mask:
                 for nxt_raw, w in adj[current]:
+                    if cancelled():
+                        yield {
+                            "event": EVENT_DONE,
+                            "result": SearchResult(
+                                False,
+                                [],
+                                0.0,
+                                expansions,
+                                elapsed(),
+                                "search cancelled",
+                                method=mth,
+                                optimal=opt,
+                            ),
+                        }
+                        return None
                     nxt = int(nxt_raw)
                     if nxt != start:
                         continue
@@ -289,6 +449,21 @@ class AStarTSPSolver:
                     }
 
             for nxt_raw, w in adj[current]:
+                if cancelled():
+                    yield {
+                        "event": EVENT_DONE,
+                        "result": SearchResult(
+                            False,
+                            [],
+                            0.0,
+                            expansions,
+                            elapsed(),
+                            "search cancelled",
+                            method=mth,
+                            optimal=opt,
+                        ),
+                    }
+                    return None
                 nxt = int(nxt_raw)
                 if nxt == start:
                     continue
@@ -302,7 +477,7 @@ class AStarTSPSolver:
                 g_best[nstate] = new_g
                 came_from[nstate] = (mask, current, 0)
                 hn = h_fn(new_mask, nxt, tsp, start)
-                fn = new_g + hn
+                fn = new_g + eps * hn
                 heapq.heappush(open_heap, (fn, hn, counter, new_mask, nxt, 0, new_g))
                 counter += 1
                 yield {
@@ -315,7 +490,16 @@ class AStarTSPSolver:
                     "phase": 0,
                 }
 
-        res = SearchResult(False, [], 0.0, expansions, elapsed(), "no solution")
+        res = SearchResult(
+            False,
+            [],
+            0.0,
+            expansions,
+            elapsed(),
+            "no solution",
+            method=mth,
+            optimal=opt,
+        )
         yield {"event": EVENT_DONE, "result": res}
         return None
 
@@ -330,5 +514,7 @@ def run_stepwise_to_end(
             if isinstance(r, SearchResult):
                 result = r
     if result is None:
-        return SearchResult(False, [], 0.0, 0, 0.0, "no events")
+        return SearchResult(
+            False, [], 0.0, 0, 0.0, "no events", method="astar_exact", optimal=True
+        )
     return result

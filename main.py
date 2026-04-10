@@ -7,6 +7,7 @@ import argparse
 import csv
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -24,6 +25,13 @@ from src.astar_tsp_solver import (
     AStarTSPSolver,
     SearchResult,
 )
+from src.feasibility_estimate import estimate_feasible_closed_tour, format_feasibility_log_lines
+from src.solve_policy import (
+    recommend_solver_mode,
+    solve_tsp_auto,
+    state_space_upper_bound,
+)
+from src.solution_verifier import exact_optimal_tour_small_n, validate_closed_tour
 from src.map_generator import (
     ensure_connected_fallback,
     generate_random_map,
@@ -32,6 +40,7 @@ from src.map_generator import (
 from src.visualization import launch_gui, save_map_png
 
 _DEFAULT: Dict[str, Any] = {
+    "default_cmd": "demo",
     "results_dir": "data/results",
     "instances_dir": "data/instances",
     "intermediate_dir": "data/intermediate",
@@ -49,15 +58,44 @@ _DEFAULT: Dict[str, Any] = {
     "demo_heuristic": "euclidean",
     "demo_max_expansions": 500000,
     "demo_time_limit": None,
-    "demo_start": 0,
+    "demo_start": "random",
     "demo_save_instance": False,
     "save_png": True,
     "save_events": True,
     "gui_default_n": 10,
     "gui_default_k": 4,
     "gui_default_heuristic": "euclidean",
+    "gui_default_start": "random",
     "gui_default_max_expansions": "500000",
     "gui_default_time_limit": "",
+    "auto_solver": True,
+    "force_exact_astar": False,
+    "force_stronger_solver": False,
+    "force_monster_solver": False,
+    "force_bruteforce": False,
+    "monster_max_n": 24,
+    "monster_time_limit_sec": 20.0,
+    "bruteforce_max_n": 11,
+    "bruteforce_time_limit_sec": None,
+    "stronger_exact_max_n": 18,
+    "stronger_exact_time_limit_sec": None,
+    "astar_max_n": 20,
+    "weighted_max_n": None,
+    "weighted_astar_epsilon": None,
+    "fallback_sa_iterations": 8000,
+    "fallback_sa_T0": 1.0,
+    "fallback_sa_T_min": 1e-4,
+    "fallback_sa_cool": 0.995,
+    "fallback_sa_seed": None,
+    "fallback_random_nn_tries": 500,
+    "fallback_rcl_size": 4,
+    "fallback_backtrack": True,
+    "fallback_backtrack_max_steps": 3000000,
+    "fallback_backtrack_restarts": 24,
+    "fallback_backtrack_time_sec": None,
+    "tables_start": "random",
+    "verify_exact_max_n": 14,
+    "verify_exact_time_sec": None,
 }
 
 _EVENT_FIELDS = [
@@ -76,6 +114,8 @@ _EVENT_FIELDS = [
     "success",
     "message",
     "elapsed_sec",
+    "method",
+    "optimal",
 ]
 
 
@@ -87,6 +127,27 @@ def _load_config(path: Path) -> Dict[str, Any]:
         if isinstance(user, dict):
             cfg.update(user)
     return cfg
+
+
+def _resolve_start_vertex(raw: Any, n: int, rng: np.random.Generator) -> int:
+    """解析起点配置：支持 random/空/整数，最终归一化到 [0, n)。"""
+    if n <= 0:
+        raise ValueError("n must be positive")
+    if raw is None:
+        return int(rng.integers(0, n))
+    if isinstance(raw, str):
+        s = raw.strip().lower()
+        if s in {"", "random", "rand"}:
+            return int(rng.integers(0, n))
+        try:
+            raw_i = int(s)
+        except ValueError as e:
+            raise ValueError(f"invalid start value: {raw!r}") from e
+    elif isinstance(raw, (int, np.integer)):
+        raw_i = int(raw)
+    else:
+        raise ValueError(f"invalid start type: {type(raw).__name__}")
+    return raw_i % n
 
 
 def _p(root: Path, rel: str) -> Path:
@@ -105,12 +166,13 @@ def _cell_num(v: Any) -> str:
 
 
 def _lines_benchmark_table(title: str, rows: List[Dict[str, Any]]) -> List[str]:
-    """实验表字段：城市规模、最优/最差/平均路径长度、总迭代次数、平均运行时间 + 成功/失败次数。"""
-    w = 92
+    """实验表字段：城市规模、路径统计、迭代与时间、成功/失败、求解方法、是否最优。"""
+    w = 118
     lines = [title, "=" * w]
     head = (
         f"{'城市规模':>6} | {'最优路径长度':>14} | {'最差路径长度':>14} | {'平均路径长度':>14} | "
-        f"{'总迭代次数':>10} | {'平均运行时间_s':>14} | {'成功':>4} | {'失败':>4}"
+        f"{'总迭代次数':>10} | {'平均运行时间_s':>14} | {'成功':>4} | {'失败':>4} | "
+        f"{'求解方法':>12} | {'最优':>4}"
     )
     lines.append(head)
     lines.append("-" * w)
@@ -119,7 +181,8 @@ def _lines_benchmark_table(title: str, rows: List[Dict[str, Any]]) -> List[str]:
             f"{int(r['城市规模']):>6} | {_cell_num(r.get('最优路径长度')):>14} | "
             f"{_cell_num(r.get('最差路径长度')):>14} | {_cell_num(r.get('平均路径长度')):>14} | "
             f"{str(r.get('总迭代次数', '')):>10} | {_cell_num(r.get('平均运行时间_s')):>14} | "
-            f"{int(r.get('成功次数', 0)):>4} | {int(r.get('失败次数', 0)):>4}"
+            f"{int(r.get('成功次数', 0)):>4} | {int(r.get('失败次数', 0)):>4} | "
+            f"{str(r.get('求解方法', '-')):>12} | {str(r.get('是否最优', '-')):>4}"
         )
         lines.append(line)
     lines.append("")
@@ -157,6 +220,8 @@ def _lines_demo_result(n: int, k: int, heuristic: str, final: Optional[SearchRes
         lines.append(f"平均每步时间_s:\t{final.elapsed_sec / final.expansions:.6f}")
     lines.append(f"success:\t{final.success}")
     lines.append(f"message:\t{final.message}")
+    lines.append(f"method:\t{final.method}")
+    lines.append(f"optimal:\t{final.optimal}")
     lines.append(f"tour:\t{final.tour}")
     lines.append("")
     return lines
@@ -170,28 +235,44 @@ def _benchmark_scale(
     base_seed: int = 0,
     max_expansions: Optional[int] = None,
     time_limit_sec: Optional[float] = None,
+    cfg: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    policy_cfg = dict(cfg or {})
     rng = np.random.default_rng(base_seed)
     costs: List[float] = []
     expansions_list: List[int] = []
     times: List[float] = []
     failures = 0
+    methods: List[str] = []
 
     for _ in range(repeats):
         seed = int(rng.integers(0, 2**31 - 1))
         g = generate_random_map(n, k_neighbors, seed=seed)
         g = ensure_connected_fallback(g, np.random.default_rng(seed))
-        solver = AStarTSPSolver(g, heuristic=heuristic_name, start=0)
-        res: SearchResult = solver.search(
+        start_i = _resolve_start_vertex(
+            policy_cfg.get("tables_start", "random"),
+            n,
+            np.random.default_rng(seed ^ 0xA5A5A5A5),
+        )
+        res: SearchResult = solve_tsp_auto(
+            g,
+            heuristic_name,
+            start_i,
+            policy_cfg,
             max_expansions=max_expansions,
             time_limit_sec=time_limit_sec,
         )
+        methods.append(res.method)
         if not res.success:
             failures += 1
             continue
         costs.append(res.cost)
         expansions_list.append(res.expansions)
         times.append(res.elapsed_sec)
+
+    mc = Counter(methods).most_common(1)
+    method_summary = mc[0][0] if mc else "-"
+    all_exact = bool(methods) and all(m == "astar_exact" for m in methods)
 
     row: Dict[str, Any] = {
         "城市规模": n,
@@ -200,6 +281,9 @@ def _benchmark_scale(
         "重复次数": repeats,
         "成功次数": repeats - failures,
         "失败次数": failures,
+        "状态空间上界": state_space_upper_bound(n),
+        "求解方法": method_summary,
+        "是否最优": "是" if all_exact else "否",
     }
     if costs:
         row["最优路径长度"] = float(np.min(costs))
@@ -266,7 +350,50 @@ def _event_row(ev: Dict[str, Any]) -> Dict[str, str]:
             row["tour"] = _fmt(r.tour)
             row["elapsed_sec"] = _fmt(r.elapsed_sec)
             row["expansions"] = _fmt(r.expansions)
+            row["method"] = _fmt(r.method)
+            row["optimal"] = _fmt(r.optimal)
     return row
+
+
+def _post_verify_result(
+    tsp: Any, final: Optional[SearchResult], start: int, cfg: Dict[str, Any]
+) -> Optional[SearchResult]:
+    if final is None:
+        return None
+    if final.success:
+        chk = validate_closed_tour(tsp, final.tour, start=start, cost=final.cost)
+        if not chk.valid:
+            return SearchResult(
+                False,
+                list(final.tour),
+                float(chk.computed_cost),
+                final.expansions,
+                final.elapsed_sec,
+                f"solution invalid: {chk.message}",
+                method=final.method,
+                optimal=False,
+            )
+        final.tour = chk.normalized_tour
+        final.cost = chk.computed_cost
+    vmax = int(cfg.get("verify_exact_max_n", 14))
+    vtime_raw = cfg.get("verify_exact_time_sec")
+    vtime = float(vtime_raw) if vtime_raw is not None else None
+    if tsp.n <= vmax:
+        cert = exact_optimal_tour_small_n(tsp, start=start, time_limit_sec=vtime)
+        if cert.certified and cert.optimal_cost is not None and final.success:
+            if abs(final.cost - cert.optimal_cost) <= 1e-8:
+                final.optimal = True
+            else:
+                final.optimal = False
+                final.message = (
+                    (final.message + "; ") if final.message else ""
+                ) + f"verified suboptimal: gap={final.cost - cert.optimal_cost:.6g}"
+        elif not cert.certified and final.success and cert.message:
+            final.message = ((final.message + "; ") if final.message else "") + cert.message
+    elif final.success:
+        note = f"optimality uncertified: n={tsp.n} > verify_exact_max_n={vmax}"
+        final.message = ((final.message + "; ") if final.message else "") + note
+    return final
 
 
 def cmd_tables(cfg: Dict[str, Any], args: argparse.Namespace) -> None:
@@ -316,6 +443,7 @@ def cmd_tables(cfg: Dict[str, Any], args: argparse.Namespace) -> None:
                     base_seed=seed + n * 1000,
                     max_expansions=max_exp,
                     time_limit_sec=time_limit,
+                    cfg=cfg,
                 )
             )
         out = _write_table_csv(rows, results_dir / f"{name}.csv")
@@ -354,16 +482,44 @@ def cmd_demo(cfg: Dict[str, Any]) -> None:
     if cfg.get("save_png", True):
         save_map_png(g, mid / "map.png", title=f"n={n} k={k} seed={dseed}")
 
-    solver = AStarTSPSolver(
-        g,
-        heuristic=str(cfg["demo_heuristic"]),
-        start=int(cfg.get("demo_start", 0)),
+    hname = str(cfg["demo_heuristic"])
+    start_i = _resolve_start_vertex(
+        cfg.get("demo_start", "random"),
+        n,
+        np.random.default_rng((dseed ^ 0x9E3779B9) & 0xFFFFFFFF),
     )
     max_e = cfg["demo_max_expansions"]
     max_t = cfg["demo_time_limit"]
     final: Optional[SearchResult] = None
+    mode = recommend_solver_mode(n, cfg)
+    feas = estimate_feasible_closed_tour(
+        g,
+        start=start_i,
+        seed=int(dseed) & 0x7FFFFFFF,
+    )
+    feas_lines = format_feasibility_log_lines(feas)
 
-    if cfg.get("save_events", True):
+    if cfg.get("save_events", True) and mode == "heuristic":
+        tsv_path = mid / "events.tsv"
+        final = solve_tsp_auto(
+            g,
+            hname,
+            start_i,
+            cfg,
+            max_expansions=max_e,
+            time_limit_sec=max_t,
+        )
+        with tsv_path.open("w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=_EVENT_FIELDS, delimiter="\t", extrasaction="ignore")
+            w.writeheader()
+            w.writerow(_event_row({"event": EVENT_DONE, "result": final}))
+    elif cfg.get("save_events", True):
+        eps = (
+            float(cfg["weighted_astar_epsilon"])
+            if mode == "weighted" and cfg.get("weighted_astar_epsilon") is not None
+            else 1.0
+        )
+        solver = AStarTSPSolver(g, heuristic=hname, start=start_i)
         tsv_path = mid / "events.tsv"
         with tsv_path.open("w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=_EVENT_FIELDS, delimiter="\t", extrasaction="ignore")
@@ -371,6 +527,7 @@ def cmd_demo(cfg: Dict[str, Any]) -> None:
             for ev in solver.search_stepwise(
                 max_expansions=max_e,
                 time_limit_sec=max_t,
+                epsilon=eps,
             ):
                 w.writerow(_event_row(ev))
                 if ev.get("event") == EVENT_DONE:
@@ -378,10 +535,27 @@ def cmd_demo(cfg: Dict[str, Any]) -> None:
                     if isinstance(r, SearchResult):
                         final = r
     else:
-        final = solver.search(max_expansions=max_e, time_limit_sec=max_t)
+        final = solve_tsp_auto(
+            g,
+            hname,
+            start_i,
+            cfg,
+            max_expansions=max_e,
+            time_limit_sec=max_t,
+        )
 
-    hname = str(cfg["demo_heuristic"])
+    final = _post_verify_result(g, final, start_i, cfg)
+
     demo_lines = _lines_demo_result(n, k, hname, final)
+    ins = 5
+    demo_lines.insert(ins, f"起点:\t{start_i}")
+    ins += 1
+    for j, fl in enumerate(feas_lines):
+        demo_lines.insert(ins + j, fl)
+    demo_lines.insert(
+        ins + len(feas_lines),
+        f"规模策略:\t{mode}\t(状态空间上界≈{state_space_upper_bound(n)})",
+    )
     demo_text = "\n".join(demo_lines)
     sum_path = mid / "summary.txt"
     sum_path.write_text(demo_text, encoding="utf-8")
@@ -398,8 +572,36 @@ def cmd_gui(cfg: Dict[str, Any]) -> None:
             "default_n": cfg.get("gui_default_n", 10),
             "default_k": cfg.get("gui_default_k", 4),
             "default_heuristic": str(cfg.get("gui_default_heuristic", "euclidean")),
+            "default_start": str(cfg.get("gui_default_start", "random")),
             "default_max_expansions": str(cfg.get("gui_default_max_expansions", "500000")),
             "default_time_limit": str(cfg.get("gui_default_time_limit", "")),
+            "auto_solver": cfg.get("auto_solver", True),
+            "force_exact_astar": cfg.get("force_exact_astar", False),
+            "force_stronger_solver": cfg.get("force_stronger_solver", False),
+            "force_monster_solver": cfg.get("force_monster_solver", False),
+            "force_bruteforce": cfg.get("force_bruteforce", False),
+            "monster_max_n": cfg.get("monster_max_n", 24),
+            "monster_time_limit_sec": cfg.get("monster_time_limit_sec", 20.0),
+            "bruteforce_max_n": cfg.get("bruteforce_max_n", 11),
+            "bruteforce_time_limit_sec": cfg.get("bruteforce_time_limit_sec"),
+            "stronger_exact_max_n": cfg.get("stronger_exact_max_n", 18),
+            "stronger_exact_time_limit_sec": cfg.get("stronger_exact_time_limit_sec"),
+            "astar_max_n": cfg.get("astar_max_n", 20),
+            "weighted_max_n": cfg.get("weighted_max_n"),
+            "weighted_astar_epsilon": cfg.get("weighted_astar_epsilon"),
+            "fallback_sa_iterations": cfg.get("fallback_sa_iterations", 8000),
+            "fallback_sa_T0": cfg.get("fallback_sa_T0", 1.0),
+            "fallback_sa_T_min": cfg.get("fallback_sa_T_min", 1e-4),
+            "fallback_sa_cool": cfg.get("fallback_sa_cool", 0.995),
+            "fallback_sa_seed": cfg.get("fallback_sa_seed"),
+            "fallback_random_nn_tries": cfg.get("fallback_random_nn_tries", 500),
+            "fallback_rcl_size": cfg.get("fallback_rcl_size", 4),
+            "fallback_backtrack": cfg.get("fallback_backtrack", True),
+            "fallback_backtrack_max_steps": cfg.get("fallback_backtrack_max_steps", 3_000_000),
+            "fallback_backtrack_restarts": cfg.get("fallback_backtrack_restarts", 24),
+            "fallback_backtrack_time_sec": cfg.get("fallback_backtrack_time_sec"),
+            "verify_exact_max_n": cfg.get("verify_exact_max_n", 14),
+            "verify_exact_time_sec": cfg.get("verify_exact_time_sec"),
         }
     )
 
@@ -407,7 +609,7 @@ def cmd_gui(cfg: Dict[str, Any]) -> None:
 def main() -> None:
     p = argparse.ArgumentParser(description="A* TSP：tables / demo / gui（见 config.json）")
     p.add_argument("--config", default="config.json", help="JSON 配置路径")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    sub = p.add_subparsers(dest="cmd", required=False)
 
     pg = sub.add_parser("gui", help="Tk 图形界面：过程展示（实验要求）")
     pg.set_defaults(func="gui")
@@ -431,9 +633,13 @@ def main() -> None:
         cfg_path = ROOT / cfg_path
     cfg = _load_config(cfg_path)
 
-    if args.func == "tables":
+    selected = getattr(args, "func", None) or str(cfg.get("default_cmd", "demo")).strip().lower()
+    if selected not in {"tables", "demo", "gui"}:
+        p.error(f"invalid default_cmd in config: {selected!r}, choose from gui/tables/demo")
+
+    if selected == "tables":
         cmd_tables(cfg, args)
-    elif args.func == "demo":
+    elif selected == "demo":
         cmd_demo(cfg)
     else:
         cmd_gui(cfg)

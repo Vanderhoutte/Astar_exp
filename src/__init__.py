@@ -18,6 +18,23 @@ from .map_generator import (
     random_tsp_instance,
     save_instance,
 )
+from .feasibility_estimate import (
+    FeasibilityEstimate,
+    estimate_feasible_closed_tour,
+    format_feasibility_log_lines,
+)
+from .solve_policy import (
+    recommend_solver_mode,
+    solve_tsp_auto,
+    state_space_upper_bound,
+)
+from .solution_verifier import (
+    OptimalityCertificate,
+    TourValidation,
+    exact_optimal_tour_small_n,
+    validate_closed_tour,
+)
+from .monster_solver import solve_tsp_monster_bnb
 from .visualization import draw_tsp, launch_gui, save_map_png
 
 __all__ = [
@@ -38,4 +55,15 @@ __all__ = [
     "draw_tsp",
     "launch_gui",
     "save_map_png",
+    "recommend_solver_mode",
+    "solve_tsp_auto",
+    "state_space_upper_bound",
+    "TourValidation",
+    "OptimalityCertificate",
+    "validate_closed_tour",
+    "exact_optimal_tour_small_n",
+    "solve_tsp_monster_bnb",
+    "FeasibilityEstimate",
+    "estimate_feasible_closed_tour",
+    "format_feasibility_log_lines",
 ]

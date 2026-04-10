@@ -10,5 +10,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 if __name__ == "__main__":
-    cmd = [sys.executable, str(ROOT / "main.py"), "tables", *sys.argv[1:]]
+    rest = list(sys.argv[1:])
+    if len(rest) >= 2 and rest[0] == "--config":
+        cmd = [sys.executable, str(ROOT / "main.py"), "--config", rest[1], "tables", *rest[2:]]
+    else:
+        cmd = [sys.executable, str(ROOT / "main.py"), "tables", *rest]
     raise SystemExit(subprocess.call(cmd))
