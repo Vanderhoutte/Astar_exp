@@ -1,5 +1,6 @@
 .vscode/
 .cursor/
 .venv/
+.marscode/
 data/
 src/__pycache__/

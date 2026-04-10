@@ -5,7 +5,7 @@ from __future__ import annotations
 import heapq
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Generator, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Generator, List, Optional, TextIO, Tuple, Union
 
 from .heuristics import HeuristicFn, get_heuristic, h_euclidean
 from .map_generator import TSPGraph
@@ -99,6 +99,11 @@ class AStarTSPSolver:
         time_limit_sec: float | None = None,
         epsilon: float = 1.0,
         cancel_check: Optional[Callable[[], bool]] = None,
+        *,
+        progress_every_expansions: int | None = None,
+        progress_every_sec: float | None = None,
+        progress_stream: Optional[TextIO] = None,
+        progress_prefix: str = "",
     ) -> SearchResult:
         h_fn = self._h_fn()
         tsp = self.tsp
@@ -116,6 +121,31 @@ class AStarTSPSolver:
 
         def cancelled() -> bool:
             return cancel_check is not None and bool(cancel_check())
+
+        prog_n = (
+            int(progress_every_expansions)
+            if progress_every_expansions is not None and int(progress_every_expansions) > 0
+            else 0
+        )
+        prog_sec = (
+            float(progress_every_sec)
+            if progress_every_sec is not None and float(progress_every_sec) > 0
+            else 0.0
+        )
+        prog_out = progress_stream
+        last_prog_t = t0
+
+        def emit_progress(note: str) -> None:
+            nonlocal last_prog_t
+            if prog_out is None:
+                return
+            last_prog_t = time.perf_counter()
+            pf = progress_prefix or "A*"
+            prog_out.write(
+                f"[{pf}] n={n} start={start} expansions={expansions} "
+                f"elapsed={elapsed():.2f}s open_heap={len(open_heap)} {note}\n"
+            )
+            prog_out.flush()
 
         counter = 0
         start_state: State = (1 << start, start, 0)
@@ -163,6 +193,11 @@ class AStarTSPSolver:
             if g_best.get(state, float("inf")) < g - 1e-12:
                 continue
             expansions += 1
+            if prog_out is not None:
+                if prog_n and expansions % prog_n == 0:
+                    emit_progress(f"(every {prog_n} expansions)")
+                elif prog_sec and (time.perf_counter() - last_prog_t) >= prog_sec:
+                    emit_progress(f"(every {prog_sec:g}s)")
             if max_expansions is not None and expansions > max_expansions:
                 return SearchResult(
                     False,
@@ -254,6 +289,11 @@ class AStarTSPSolver:
         time_limit_sec: float | None = None,
         epsilon: float = 1.0,
         cancel_check: Optional[Callable[[], bool]] = None,
+        *,
+        progress_every_expansions: int | None = None,
+        progress_every_sec: float | None = None,
+        progress_stream: Optional[TextIO] = None,
+        progress_prefix: str = "",
     ) -> Generator[Dict[str, Any], None, Optional[SearchResult]]:
         h_fn = self._h_fn()
         tsp = self.tsp
@@ -268,6 +308,31 @@ class AStarTSPSolver:
 
         def cancelled() -> bool:
             return cancel_check is not None and bool(cancel_check())
+
+        prog_n = (
+            int(progress_every_expansions)
+            if progress_every_expansions is not None and int(progress_every_expansions) > 0
+            else 0
+        )
+        prog_sec = (
+            float(progress_every_sec)
+            if progress_every_sec is not None and float(progress_every_sec) > 0
+            else 0.0
+        )
+        prog_out = progress_stream
+        last_prog_t = t0
+
+        def emit_progress(note: str) -> None:
+            nonlocal last_prog_t
+            if prog_out is None:
+                return
+            last_prog_t = time.perf_counter()
+            pf = progress_prefix or "A*"
+            prog_out.write(
+                f"[{pf}] n={n} start={start} expansions={expansions} "
+                f"elapsed={elapsed():.2f}s open_heap={len(open_heap)} {note}\n"
+            )
+            prog_out.flush()
 
         counter = 0
         start_state: State = (1 << start, start, 0)
@@ -323,6 +388,11 @@ class AStarTSPSolver:
             if g_best.get(state, float("inf")) < g - 1e-12:
                 continue
             expansions += 1
+            if prog_out is not None:
+                if prog_n and expansions % prog_n == 0:
+                    emit_progress(f"(every {prog_n} expansions)")
+                elif prog_sec and (time.perf_counter() - last_prog_t) >= prog_sec:
+                    emit_progress(f"(every {prog_sec:g}s)")
             if max_expansions is not None and expansions > max_expansions:
                 yield {
                     "event": EVENT_DONE,

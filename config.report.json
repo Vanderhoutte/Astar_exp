@@ -1,0 +1,17 @@
+{
+  "results_dir": "data/report/tables",
+  "instances_dir": "data/report/instances",
+  "sizes": [10, 20, 50, 100],
+  "k": 4,
+  "repeats": 10,
+  "seed": 42,
+  "save_sample_maps": true,
+  "auto_time_limit_n_ge_50": true,
+  "force_astar_only": true,
+  "astar_progress_every_expansions": 100000,
+  "astar_progress_every_sec": 10.0,
+  "force_exact_astar": false,
+  "force_monster_solver": false,
+  "force_stronger_solver": false,
+  "force_bruteforce": false
+}

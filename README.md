@@ -7,7 +7,7 @@
 - **配置**：根目录 [`config.json`](config.json)，可复制 [`config.example.json`](config.example.json)  
 - **`demo`**：将步进事件与结果写入 `data/intermediate/`（TSV、摘要、PNG）
 
-实验说明文档（课程原始材料）位于 `data/` 目录的 Word 文件（如你的本地 `实验一_AStar算法求解TSP问题实验.docx`）。
+实验说明文档（课程 Word）可自行复制到 `docs/`；报告配图与表 1–3 生成说明见 [`docs/report/README.md`](docs/report/README.md)。
 
 ## 背景：TSP 与 A\*
 
@@ -41,6 +41,7 @@
 
 - Python 3.10+（建议）  
 - 依赖：`pip install -r requirements.txt`  
+- 开发/报告自动化：`pip install -r requirements-dev.txt`（含 **pytest**）  
 - **GUI** 需要 **tkinter**（多数系统随 Python 提供）
 
 ## 安装
@@ -48,6 +49,7 @@
 ```bash
 cd Astar_exp
 pip install -r requirements.txt
+pip install -r requirements-dev.txt   # 可选：跑测试与报告配图脚本
 ```
 
 ## 项目结构
@@ -67,6 +69,12 @@ pip install -r requirements.txt
 | `src/mpl_compat.py` | 过滤混装 Matplotlib 的常见警告 |
 | `scripts/run_experiments.py` | 等价于 `python main.py tables …` |
 | `scripts/launch_gui.py` | 等价于 `python main.py gui`（支持 `--config`，见下） |
+| `scripts/generate_report_assets.py` | 生成实验报告用表 1–3、样例地图与对比图（见 `docs/report/README.md`） |
+| `config.report.json` | 报告批量实验覆盖配置（输出目录 `data/report/…`） |
+| `tests/` | `pytest` 用例（表字段、PNG、drawio 存在性） |
+| `requirements-dev.txt` | 开发依赖（含 `pytest`） |
+| `docs/report/README.md` | 报告配图与 Word 表头说明 |
+| `docs/gui_mindmap.drawio` | GUI 设计思维导图（draw.io 源文件） |
 | `data/results/` | `table*.csv`、`run_summary.txt` |
 | `data/instances/` | 可选：`tables --save-sample-maps` 的示例地图 |
 | `data/intermediate/` | `demo`：`events.tsv`、`summary.txt`、`map.png`、`solution.png` |
@@ -106,7 +114,7 @@ python main.py --config config.json gui
 cp config.example.json config.json   # 首次可复制模板后编辑
 ```
 
-常用键：`default_cmd`、`sizes`、`k`、`repeats`、`seed`、`max_expansions`、`time_limit`、`save_sample_maps`、`auto_time_limit_n_ge_50`、`tables_start`、`force_exact_astar`、`force_stronger_solver`、`force_monster_solver`、`force_bruteforce`、`monster_max_n`、`monster_time_limit_sec`、`bruteforce_max_n`、`bruteforce_time_limit_sec`、`stronger_exact_max_n`、`stronger_exact_time_limit_sec`、`verify_exact_max_n`、`verify_exact_time_sec`；`demo_*`（含 `demo_start`）；`intermediate_dir`；`gui_default_*`（含 `gui_default_start`）。
+常用键：`default_cmd`、`sizes`、`k`、`repeats`、`seed`、`max_expansions`、`time_limit`、`save_sample_maps`、`auto_time_limit_n_ge_50`、`auto_time_limit_n_ge_50_sec`（n≥50 自动时限秒数，默认 600）、`tables_start`、`force_exact_astar`、`force_stronger_solver`、`force_monster_solver`、`force_bruteforce`、`monster_max_n`、`monster_time_limit_sec`、`bruteforce_max_n`、`bruteforce_time_limit_sec`、`stronger_exact_max_n`、`stronger_exact_time_limit_sec`、`verify_exact_max_n`、`verify_exact_time_sec`；`demo_*`（含 `demo_start`）；`intermediate_dir`；`gui_default_*`（含 `gui_default_start`）。
 
 ### 2. 批量实验（表 1–3）
 
@@ -122,7 +130,7 @@ python main.py tables --save-sample-maps
 - 生成：`data/results/table1_euclidean.csv` 等。  
 - **终端**打印与实验表字段一致的汇总；并写入 **`data/results/run_summary.txt`**（UTF-8）。  
 - `max_expansions` / `time_limit` 为 JSON **`null`** 表示不限制。  
-- 若 `auto_time_limit_n_ge_50` 为 **true**（默认），且未设上述两项、且 `sizes` 中含 **n≥50**，则每次运行自动 **120s** 时限（stderr 有提示）。
+- 若 `auto_time_limit_n_ge_50` 为 **true**（默认），且未设上述两项、且 `sizes` 中含 **n≥50**，则每次运行自动 **`auto_time_limit_n_ge_50_sec` 秒**时限（默认 **600**，即 10 分钟；stderr 有提示）。
 
 ### 3. 图形界面（GUI）
 
@@ -177,6 +185,19 @@ cfg = {
 }
 res2 = solve_tsp_auto(g, "euclidean", start, cfg, max_expansions=500_000, time_limit_sec=60.0)
 ```
+
+### 6. 实验报告：测试与配图
+
+```bash
+pip install -r requirements-dev.txt
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -q    # 若本机 pytest 插件冲突可保留此前缀
+python scripts/generate_report_assets.py      # 完整：表1–3 + 样例地图 + 对比图（耗时较长）
+python scripts/generate_report_assets.py --fast # 快速冒烟
+```
+
+- 自动化测试位于 `tests/`，校验批量表字段、`save_map_png`、流程图与 GUI 思维导图 `.drawio` 存在性。  
+- 报告用配置：[`config.report.json`](config.report.json)；生成物默认在 `data/report/`（根目录 `.gitignore` 已忽略 `data/`）。  
+- 流程图 / 思维导图 PNG：用 draw.io 从 [`docs/astar_tsp_flowchart.drawio`](docs/astar_tsp_flowchart.drawio)、[`docs/gui_mindmap.drawio`](docs/gui_mindmap.drawio) 导出，详见 [`docs/report/README.md`](docs/report/README.md)。
 
 ## 为何有时无法完成求解？
 

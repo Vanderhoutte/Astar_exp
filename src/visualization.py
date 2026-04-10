@@ -27,6 +27,7 @@ from .astar_tsp_solver import (
 )
 from .heuristics import get_heuristic
 from .solve_policy import (
+    astar_search_progress_kwargs,
     recommend_solver_mode,
     solve_tsp_auto,
     state_space_upper_bound,
@@ -892,7 +893,7 @@ class AStarGUI:
             pcfg.get("force_stronger_solver")
             or pcfg.get("force_monster_solver")
             or pcfg.get("force_bruteforce")
-        )
+        ) and (not pcfg.get("force_astar_only", False))
         ub = state_space_upper_bound(tsp.n)
         self._cancel_astar.clear()
         self._astar_bg_running = (mode in ("exact", "weighted")) and (not force_non_astar)
@@ -941,11 +942,13 @@ class AStarGUI:
                 else 1.0
             )
             solver = AStarTSPSolver(tsp, heuristic=hname, start=start_i)
+            prog_kw = astar_search_progress_kwargs(pcfg)
             for ev in solver.search_stepwise(
                 max_expansions=max_e,
                 time_limit_sec=max_t,
                 epsilon=eps,
                 cancel_check=self._cancel_astar.is_set,
+                **prog_kw,
             ):
                 et = ev.get("event")
                 if et == EVENT_POP:
@@ -1019,7 +1022,7 @@ class AStarGUI:
                 pcfg.get("force_stronger_solver")
                 or pcfg.get("force_monster_solver")
                 or pcfg.get("force_bruteforce")
-            ):
+            ) and (not pcfg.get("force_astar_only", False)):
                 self._log("当前模式不支持步进展示，自动改为后台运行到结束。")
                 self.on_run_full()
                 return
@@ -1042,11 +1045,13 @@ class AStarGUI:
                     else 1.0
                 )
                 solver = AStarTSPSolver(self.tsp, heuristic=self.var_h.get(), start=start_i)
+                prog_kw = astar_search_progress_kwargs(pcfg)
                 self.gen = solver.search_stepwise(
                     max_expansions=max_e,
                     time_limit_sec=max_t,
                     epsilon=eps,
                     cancel_check=self._cancel_astar.is_set,
+                    **prog_kw,
                 )
             self.paused = False
             self._cum_search_s = 0.0

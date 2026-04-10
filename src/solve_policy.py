@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import sys
 import time
 from typing import Any, Dict, Literal
 
@@ -267,6 +268,13 @@ def recommend_solver_mode(n: int, cfg: Dict[str, Any]) -> SolverMode:
         return "exact"
     if cfg.get("force_exact_astar"):
         return "exact"
+    if cfg.get("force_astar_only"):
+        amax = int(cfg.get("astar_max_n", 20))
+        if n <= amax:
+            return "exact"
+        if _weighted_available(n, cfg):
+            return "weighted"
+        return "exact"
     amax = int(cfg.get("astar_max_n", 20))
     if n <= amax:
         return "exact"
@@ -281,6 +289,32 @@ def recommend_solver_mode(n: int, cfg: Dict[str, Any]) -> SolverMode:
     return base_mode
 
 
+def astar_search_progress_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """供 A*.search / search_stepwise 周期性 stderr 输出。
+
+    仅在配置中显式设置 ``astar_progress_every_expansions`` / ``astar_progress_every_sec``
+    且值 >0 时启用（避免默认 demo/GUI 刷屏）。
+    """
+    out: Dict[str, Any] = {}
+    pe_raw = cfg.get("astar_progress_every_expansions")
+    ps_raw = cfg.get("astar_progress_every_sec")
+    try:
+        pe = int(pe_raw)
+        if pe > 0:
+            out["progress_every_expansions"] = pe
+    except (TypeError, ValueError):
+        pass
+    try:
+        ps = float(ps_raw)
+        if ps > 0:
+            out["progress_every_sec"] = ps
+    except (TypeError, ValueError):
+        pass
+    if out:
+        out["progress_stream"] = sys.stderr
+    return out
+
+
 def solve_tsp_auto(
     tsp: TSPGraph,
     heuristic: str,
@@ -290,7 +324,8 @@ def solve_tsp_auto(
     time_limit_sec: float | None = None,
 ) -> SearchResult:
     start = normalize_start(start, tsp.n)
-    if cfg.get("force_monster_solver", False):
+    force_ao = bool(cfg.get("force_astar_only", False))
+    if not force_ao and cfg.get("force_monster_solver", False):
         mmax = int(cfg.get("monster_max_n", 24))
         mtl_raw = cfg.get("monster_time_limit_sec")
         mtl = float(mtl_raw) if mtl_raw is not None else None
@@ -322,7 +357,7 @@ def solve_tsp_auto(
                     )
                     res = fb
         mode: SolverMode | None = None
-    elif cfg.get("force_bruteforce", False):
+    elif not force_ao and cfg.get("force_bruteforce", False):
         bf_max_n = int(cfg.get("bruteforce_max_n", 11))
         if tsp.n > bf_max_n:
             return SearchResult(
@@ -340,7 +375,7 @@ def solve_tsp_auto(
         res = _solve_tsp_bruteforce(tsp, start, time_limit_sec=bf_tl)
         # 暴力完整跑完时已是最优；后续验证链路保留用于一致性与校验。
         mode: SolverMode | None = None
-    elif cfg.get("force_stronger_solver", False):
+    elif not force_ao and cfg.get("force_stronger_solver", False):
         res = _solve_tsp_stronger_non_astar(tsp, start, cfg)
         mode = None
     else:
@@ -351,12 +386,14 @@ def solve_tsp_auto(
     verify_exact_time = float(verify_exact_time_sec) if verify_exact_time_sec is not None else None
 
     if mode is not None:
+        prog_kw = astar_search_progress_kwargs(cfg)
         if mode == "exact":
             solver = AStarTSPSolver(tsp, heuristic=heuristic, start=start)
             res = solver.search(
                 max_expansions=max_expansions,
                 time_limit_sec=time_limit_sec,
                 epsilon=1.0,
+                **prog_kw,
             )
         elif mode == "weighted":
             eps = float(cfg["weighted_astar_epsilon"])
@@ -365,6 +402,7 @@ def solve_tsp_auto(
                 max_expansions=max_expansions,
                 time_limit_sec=time_limit_sec,
                 epsilon=eps,
+                **prog_kw,
             )
         else:
             seed = cfg.get("fallback_sa_seed")

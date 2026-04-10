@@ -11,6 +11,7 @@
   "time_limit": null,
   "save_sample_maps": false,
   "auto_time_limit_n_ge_50": true,
+  "auto_time_limit_n_ge_50_sec": 600.0,
   "demo_n": 10,
   "demo_k": 4,
   "demo_seed": 0,

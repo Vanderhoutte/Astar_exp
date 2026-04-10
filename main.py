@@ -27,6 +27,7 @@ from src.astar_tsp_solver import (
 )
 from src.feasibility_estimate import estimate_feasible_closed_tour, format_feasibility_log_lines
 from src.solve_policy import (
+    astar_search_progress_kwargs,
     recommend_solver_mode,
     solve_tsp_auto,
     state_space_upper_bound,
@@ -52,6 +53,7 @@ _DEFAULT: Dict[str, Any] = {
     "time_limit": None,
     "save_sample_maps": False,
     "auto_time_limit_n_ge_50": True,
+    "auto_time_limit_n_ge_50_sec": 600.0,
     "demo_n": 10,
     "demo_k": 4,
     "demo_seed": 0,
@@ -69,6 +71,7 @@ _DEFAULT: Dict[str, Any] = {
     "gui_default_max_expansions": "500000",
     "gui_default_time_limit": "",
     "auto_solver": True,
+    "force_astar_only": False,
     "force_exact_astar": False,
     "force_stronger_solver": False,
     "force_monster_solver": False,
@@ -411,9 +414,11 @@ def cmd_tables(cfg: Dict[str, Any], args: argparse.Namespace) -> None:
         and time_limit is None
         and max(sizes, default=0) >= 50
     ):
-        time_limit = 120.0
+        time_limit = float(cfg.get("auto_time_limit_n_ge_50_sec", 600.0))
         print(
-            "提示: n≥50 时默认每 run 时限 120s（可在 config 关 auto_time_limit_n_ge_50 或设 max_expansions/time_limit）",
+            "提示: n≥50 时默认每 run 时限 "
+            f"{time_limit:.0f}s（约 {time_limit / 60.0:.0f} 分钟；可在 config 调整 "
+            "auto_time_limit_n_ge_50_sec、关 auto_time_limit_n_ge_50 或设 max_expansions/time_limit）",
             file=sys.stderr,
         )
 
@@ -434,6 +439,11 @@ def cmd_tables(cfg: Dict[str, Any], args: argparse.Namespace) -> None:
     ]:
         rows = []
         for n in sizes:
+            print(
+                f"[tables] {name} 启发={hkey} n={n} k={k} repeats={repeats} …",
+                flush=True,
+                file=sys.stderr,
+            )
             rows.append(
                 _benchmark_scale(
                     n,
@@ -521,6 +531,7 @@ def cmd_demo(cfg: Dict[str, Any]) -> None:
         )
         solver = AStarTSPSolver(g, heuristic=hname, start=start_i)
         tsv_path = mid / "events.tsv"
+        prog_kw = astar_search_progress_kwargs(cfg)
         with tsv_path.open("w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=_EVENT_FIELDS, delimiter="\t", extrasaction="ignore")
             w.writeheader()
@@ -528,6 +539,7 @@ def cmd_demo(cfg: Dict[str, Any]) -> None:
                 max_expansions=max_e,
                 time_limit_sec=max_t,
                 epsilon=eps,
+                **prog_kw,
             ):
                 w.writerow(_event_row(ev))
                 if ev.get("event") == EVENT_DONE:
